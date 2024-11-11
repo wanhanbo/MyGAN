@@ -20,9 +20,9 @@ import torch
 import glob
 # python implementations/context_encoder/generate.py <input_dir> <out_dir> <pth_path>
 parser = argparse.ArgumentParser()
-parser.add_argument("--root_dir", type=str, default='./input_filterd', help="root dir for  generating initial data randomly")
-parser.add_argument("--out_dir", type=str, default='./1006-v1-115530', help="out dir to save the generated image seq")
-parser.add_argument("--ckpt", type=str, default='/Users/shuyi/codes/ConvLSTM/1006-v1-115530.pth', help="checkpoint of generator")
+parser.add_argument("--root_dir", type=str, default='/home/horde/datasets/rock/rockCT', help="root dir for  generating initial data randomly")
+parser.add_argument("--out_dir", type=str, default='/home/horde/datasets/rock/output/inf/20241109_094619/69300', help="out dir to save the generated image seq")
+parser.add_argument("--ckpt", type=str, default='/home/horde/datasets/rock/output/20241109_094619/69300.pth', help="checkpoint of generator")
 parser.add_argument("--height", type=int, default=400, help="number of generate images")
 opt = parser.parse_args()
 print(opt)
@@ -32,8 +32,8 @@ if not os.path.exists(opt.out_dir):
 
 cuda = True if torch.cuda.is_available() else False
 
-seq_len = 6
-generator = GeneratorUnet(output_dim=1, input_dim=1, hidden_dim=[8, 16, 8], kernel_size=(3, 3), num_layers=3)
+seq_len = 10
+generator = GeneratorNoise(output_dim=1, input_dim=1, hidden_dim=[8, 16, 8], kernel_size=(3, 3), num_layers=3)
 if opt.ckpt:
     weights_dict = torch.load(opt.ckpt, map_location='cpu')['generator']
     generator.load_state_dict(weights_dict)
@@ -53,7 +53,7 @@ transforms_ = [
     transforms.Normalize((0.49,) * seq_len, (0.5,) * seq_len)  # (x-mean) / std
 ]
 
-dataset = ImageDataset(opt.root_dir, transforms_=transforms_)
+dataset = ImageDataset(opt.root_dir, 400, transforms_=transforms_, seq_len = seq_len)
 ind = random.randint(0, len(dataset))
 imgs = dataset[ind][:-1, ...].unsqueeze(0)
 imgs = imgs.type(Tensor)

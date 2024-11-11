@@ -742,10 +742,8 @@ class GeneratorCorrection2(nn.Module):
         cor = self.adjust(cor)
         cor = self.encoder_cor(cor)
         
-        # output = torch.cat([cur, cor], dim = 1) # result size = 50 channels = 128 + 128 = 256
         output = 0.9 * cur + 0.1 * cor  # result size = 50 channels = 128 
         
-
         # 再叠加噪音128
         noise_size = output.shape[-1]
         output = concatNoise(output,[x.shape[0], 128, noise_size, noise_size])  # result size = 50 channels = 256
