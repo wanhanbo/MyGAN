@@ -4,7 +4,7 @@ import glob
 from tqdm import tqdm
 
 # 图像文件夹路径和输出视频路径
-image_folder = '/Users/shuyi/codes/ConvLSTM/1018-v1-211500'
+image_folder = '/home/horde/datasets/rock/output/inf/20241109_094619/69300'
 output_video = f"{image_folder.split('/')[-1]}.mp4"
 
 # 获取图像列表

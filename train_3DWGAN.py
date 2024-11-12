@@ -20,19 +20,19 @@ from skimage import morphology
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--root_dir", type=str, default="./input_filterd", help="root dir of img dataset")
-parser.add_argument("--out_dir", type=str, default="./1010", help="out dir to save the generated image")
+parser.add_argument("--root_dir", type=str, default="/home/horde/datasets/rock/rockCT", help="root dir of img dataset")
+parser.add_argument("--out_dir", type=str, default="./output", help="out dir to save the generated image")
 parser.add_argument("--n_epochs", type=int, default=600, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=2, help="size of the batches")
+parser.add_argument("--batch_size", type=int, default=4, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0001, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads to use during batch generation")
 parser.add_argument("--ckpt", type=str, default='', help="checkpoint of generator and discriminator")
-parser.add_argument("--ori_size", type=int, default=1200, help="size of each image dimension")
-parser.add_argument("--img_size", type=int, default=64, help="size of each image dimension")
+parser.add_argument("--ori_size", type=int, default=1200, help="ori size of each image dimension")
+parser.add_argument("--img_size", type=int, default=256, help="size of each image dimension")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=1000, help="interval between image sampling")
+parser.add_argument("--sample_interval", type=int, default=2000, help="interval between image sampling")
 parser.add_argument("--save_interval", type=int, default=1000, help="interval between ckpt save")
 parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
 parser.add_argument('--gp_weight', type=float, default=10)
@@ -40,7 +40,7 @@ parser.add_argument('--pixel_weight', type=float, default=0.2, help='weight of p
 opt = parser.parse_args()
 print(opt)
 
-use_wandb = False
+use_wandb = True
 
 # start a new wandb run to track this script
 if use_wandb:
@@ -116,7 +116,7 @@ def save_sample(batches_done):
     samples = next(iter(dataloader))
     samples = Variable(samples.type(Tensor)) # [bs, 1, s, h, w]
     
-    noise = torch.rand(img.shape[0], 1, 2, 2, 2)    # [bs, 1, s, h, w]
+    noise = torch.rand(img.shape[0], 1, 8, 8, 8)    # [bs, 1, s, h, w]
     noise = Variable(noise.type(Tensor))
     # Generate inpainted image
     gen_img = generator(noise)
@@ -190,7 +190,7 @@ for epoch in range(start_epoch, opt.n_epochs):
             img = next(data_iter)
             img = Variable(img.type(Tensor))  # [bs, 1, s, h, w]
 
-            noise = torch.rand(img.shape[0], 1, 2, 2, 2)    # [bs, 1, s, h, w]
+            noise = torch.rand(img.shape[0], 1, 8, 8, 8)    # [bs, 1, s, h, w]
             noise = Variable(noise.type(Tensor))
         
             gen_img = generator(noise) # [bs, 1, 1, h, w]
@@ -219,7 +219,7 @@ for epoch in range(start_epoch, opt.n_epochs):
 
         optimizer_G.zero_grad()
 
-        noise = torch.rand(img.shape[0], 1, 2, 2, 2)    # [bs, 1, s, h, w]
+        noise = torch.rand(img.shape[0], 1, 8, 8, 8)    # [bs, 1, s, h, w]
         noise = Variable(noise.type(Tensor))
         gen_img = generator(noise) # [bs, 1, 1, h, w]
         # Adversarial loss
