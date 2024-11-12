@@ -1,6 +1,5 @@
-def weights_init_normal():
-    return 1, 2
+x = [1,2,3]
+z = (2 ** 3)
 
-
-x = weights_init_normal()
-print(x[0])
+print(x)
+print(z)

@@ -36,11 +36,13 @@ def random_rotate(imgs_tensor):
     else:
         return torch.rot90(imgs_tensor, -3, dims=(1, 2))# 旋转 270 度
 
+''' seq_len的语义是一次性加载的长度, 和训练模型无关'''
 class ImageDataset(Dataset):  
-    def __init__(self, root_dir, img_size, transforms_=None):
+    def __init__(self, root_dir, img_size, transforms_=None, seq_len = 6):
         super(ImageDataset, self).__init__()
         self.root_dir = root_dir
         self.img_size = img_size
+        self.seq_len = seq_len
         self.transforms = transforms.Compose(transforms_)
         self.data = sorted(glob.glob(os.path.join(root_dir, "*.bmp")), key=lambda x: int(''.join(filter(str.isdigit, x))))
     
@@ -48,16 +50,16 @@ class ImageDataset(Dataset):
         return len(self.data)
     
     def __getitem__(self, index):  
-        index = random.randint(0, len(self.data) - 6)
+        index = random.randint(0, len(self.data) - self.seq_len - 1)
         imgs_list = []
-        for i in range(index, index + 6):
+        for i in range(index, index + self.seq_len):
             img_path = self.data[i] 
-            img = Image.open(os.path.join(self.root_dir, img_path))
+            img = Image.open(os.path.join(self.root_dir, img_path)).convert('L')
             imgs_list.append(ToTensor()(img).squeeze(0))    # [h, w]
             img.close()
         
         imgs_tensor = torch.stack(tuple(imgs_list), dim=0)  # [seq_len, h, w]
-        imgs_tensor = random_crop_3d(imgs_tensor, (6, self.img_size, self.img_size))
+        imgs_tensor = random_crop_3d(imgs_tensor, (self.seq_len, self.img_size, self.img_size))
         # 增加随机旋转
         imgs_tensor = random_rotate(imgs_tensor)
         if self.transforms:
@@ -65,7 +67,8 @@ class ImageDataset(Dataset):
         imgs_tensor = imgs_tensor.unsqueeze(1) # [seq_len, c, h, w]
         
         return imgs_tensor
-    
+
+'''额外返回一张随机图像, 主要用于纠偏模型读取数据'''
 class ImageDatasetWithSingle(Dataset):  
     def __init__(self, root_dir, img_size, transforms_=None):
         super(ImageDatasetWithSingle, self).__init__()
@@ -103,6 +106,7 @@ class ImageDatasetWithSingle(Dataset):
         
         return imgs_tensor[:-1,...],imgs_tensor[-1,...]
 
+'''随机读取单张图像'''
 class SingleImageDataset(Dataset):  
     def __init__(self, root_dir, img_size, transforms_ = None):
         super(SingleImageDataset, self).__init__()
@@ -117,7 +121,7 @@ class SingleImageDataset(Dataset):
     def __getitem__(self, index):  
         # 加载图像
         img_path = self.data[index]
-        img = Image.open(os.path.join(self.root_dir, img_path))
+        img = Image.open(os.path.join(self.root_dir, img_path)).convert('L')
 
         # 转换为张量
         imgs_tensor = ToTensor()(img)
@@ -163,7 +167,7 @@ class ImageDataset3D(Dataset):
         w0 = random.randint(0, w - tw)
         for i in range(index, index + seq_len):
             img_path = self.data[i] 
-            img = Image.open(os.path.join(self.root_dir, img_path))
+            img = Image.open(os.path.join(self.root_dir, img_path)).convert('L')
             imgs_tensor = ToTensor()(img).squeeze(0) # [h, w]
             # 按既定参数裁剪
             imgs_tensor = imgs_tensor[h0:h0+th, w0:w0+tw]

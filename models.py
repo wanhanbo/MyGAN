@@ -689,7 +689,7 @@ class GeneratorCorrection(nn.Module):
 class GeneratorCorrection2(nn.Module):
     def __init__(self, output_dim, input_dim, hidden_dim, correction_dim, kernel_size, num_layers,
                  batch_first = True, bias = True, return_all_layers = False):
-        super(GeneratorCorrection, self).__init__()
+        super(GeneratorCorrection2, self).__init__()
         self.convlstm = CLSTM(input_dim, hidden_dim, kernel_size, num_layers,
                  batch_first, bias, return_all_layers)
         self.encoder = nn.Sequential(
@@ -742,10 +742,8 @@ class GeneratorCorrection2(nn.Module):
         cor = self.adjust(cor)
         cor = self.encoder_cor(cor)
         
-        # output = torch.cat([cur, cor], dim = 1) # result size = 50 channels = 128 + 128 = 256
         output = 0.9 * cur + 0.1 * cor  # result size = 50 channels = 128 
         
-
         # 再叠加噪音128
         noise_size = output.shape[-1]
         output = concatNoise(output,[x.shape[0], 128, noise_size, noise_size])  # result size = 50 channels = 256
