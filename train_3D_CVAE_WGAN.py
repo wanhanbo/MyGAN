@@ -73,8 +73,8 @@ vae = CVAE(output_dim = 1, input_dim = 1, input_size = opt.img_size, noise_size 
 discriminator = Discriminator(output_dim = 1, input_dim = 1)
 
 if cuda:
-    vae.to('cuda')
-    discriminator.to('cuda')
+    vae.cuda()
+    discriminator.cuda()
     
 
 # Dataset loader
@@ -95,8 +95,8 @@ criterion = nn.BCELoss()
 MSECriterion = nn.MSELoss()
 
 if cuda:
-    criterion.to('cuda')
-    discriminator.to('cuda')
+    criterion.cuda()
+    discriminator.cuda()
 
 # Optimizers
 optimizer_VAE = torch.optim.Adam(vae.parameters(), lr=opt.lr, betas=(.9, .99))
@@ -246,30 +246,41 @@ for epoch in range(start_epoch, opt.n_epochs):
                 p.requires_grad = False
 
         optimizer_VAE.zero_grad()
-        recon_img, mean, logstd = vae(img)
         # 计算原始输入图像的孔隙度
         por = porosity(img)  # [bs, 1]
+        recon_img, mean, logstd = vae(img, por)
         recon_por = porosity(recon_img)
         vaeloss = vae_loss(gen_img, img, mean, logstd) + porosityLoss(por, recon_por)
-        vaeloss.backward(retain_graph = True)
+        vaeloss.backward()
         optimizer_VAE.step()
 
         # -----------------
         #  (3) Train Generator
         # -----------------
         optimizer_VAE.zero_grad()
-        # 沿用之前fake出来的gen_img
+        # 必须重新生成
+        z = torch.rand(img.shape[0], nz)    
+        z = Variable(z.type(Tensor))
+        fake_por = 0.2 + (0.8 - 0.2) * torch.rand(img.shape[0], 1)
+        fake_por = Variable(fake_por.type(Tensor))
+        embedding_c = vae.conditionEmbedding(fake_por)
+        z = torch.concat([z, embedding_c], dim = 1)
+        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
+        gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
         gen_imgs_discri = discriminator(gen_img)
         gen_por = porosity(gen_img)
-        g_loss = -gen_imgs_discri.mean() + porosityLoss(fake_por, gen_por)
+
+        g_loss = -gen_imgs_discri.mean()
+        por_loss = porosityLoss(fake_por, gen_por).mean()
+        g_loss += por_loss
         g_loss.backward()
         optimizer_VAE.step()
 
         gen_iterations += 1
 
         print(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [VAE Loss: %f] [gp: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item() ,vaeloss.item(),  gp.item())
+            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [VAE Loss: %f] [por Loss: %f] [gp: %f]"
+            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item() ,vaeloss.item(), por_loss.item(), gp.item())
         )
 
         # Generate sample at sample interval
@@ -290,7 +301,7 @@ for epoch in range(start_epoch, opt.n_epochs):
                         'gp': gp},  "%s/%d.pth" % (opt.out_dir, batches_done))
         
         if use_wandb:
-            wandb.log({'d_loss': d_loss, 'g_loss': g_loss, 'vae_loss:' : vaeloss ,'gp': gp})
+            wandb.log({'d_loss': d_loss, 'g_loss': g_loss, 'vae_loss:' : vaeloss ,'por_loss' : por_loss, 'gp': gp})
             
 
 torch.save({'epoch': epoch, 
