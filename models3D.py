@@ -249,12 +249,13 @@ def porosity(img):
     count_below_threshold = thresholded_tensor.sum(dim=(2, 3, 4))  # 形状为 [bs, 1]
 
     # 3. 计算总像素数
-    total_pixels = img.shape[2] * img.shape[3] * img.shape[5]  # 三维模型的总像素数
+    total_pixels = img.shape[2] * img.shape[3] * img.shape[4]  # 三维模型的总像素数
 
     # 4. 计算孔隙度
     porosity = count_below_threshold / total_pixels  # 形状为 [bs, 1]
 
     # 如果需要去掉多余的维度，可以使用 squeeze
-    # porosity = porosity.squeeze()  # 形状变为 [bs]s
+    # porosity = porosity.squeeze()  # 形状变为 [bs]
+
 
     return porosity
