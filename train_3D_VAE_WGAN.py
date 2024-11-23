@@ -1,5 +1,5 @@
 """
-edited by @Molan 2024.10.23
+edited by @Molan 2024.11.23
 /opt/homebrew/opt/python@3.11/bin/python3.11
 """
 
@@ -248,6 +248,12 @@ for epoch in range(start_epoch, opt.n_epochs):
            个人然觉应该用gen_img
            注意: 如果用recon_img, 需要detach
         '''
+        # 随机产生一个潜在变量，然后通过decoder 产生生成图片
+        z = torch.rand(img.shape[0], nz)    
+        z = Variable(z.type(Tensor))
+        # 通过vae的decoder把潜在变量z变成虚假图片
+        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
+        gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
         gen_imgs_discri = discriminator(gen_img)
         g_loss = -gen_imgs_discri.mean()
         g_loss.backward()
