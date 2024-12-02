@@ -1,5 +1,5 @@
 """
-edited by @Molan 2024.10.23
+edited by @Molan 2024.11.29
 /opt/homebrew/opt/python@3.11/bin/python3.11
 """
 
@@ -17,6 +17,7 @@ import random
 from torch.autograd import grad as torch_grad
 import numpy as np
 from skimage import morphology
+import torch.nn.functional as F
 
 
 parser = argparse.ArgumentParser()
@@ -24,20 +25,20 @@ parser.add_argument("--root_dir", type=str, default="./input_filterd", help="roo
 parser.add_argument("--out_dir", type=str, default="./1010", help="out dir to save the generated image")
 parser.add_argument("--n_epochs", type=int, default=600, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=2, help="size of the batches")
-parser.add_argument("--lr", type=float, default=0.0001, help="adam: learning rate")
+parser.add_argument("--lr", type=float, default=0.00005, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads to use during batch generation")
 parser.add_argument("--ckpt", type=str, default='', help="checkpoint of generator and discriminator")
 parser.add_argument("--ori_size", type=int, default = 1200, help="size of each image dimension in dataset")
-parser.add_argument("--img_size", type=int, default = 64, help="size of each image dimension for training")
-parser.add_argument("--noise_size", type=int, default = 64, help="size of noise  dimension for training")
+parser.add_argument("--img_size", type=int, default = 256, help="size of each image dimension for training")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=1000, help="interval between image sampling")
 parser.add_argument("--save_interval", type=int, default=1000, help="interval between ckpt save")
-parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
-parser.add_argument('--gp_weight', type=float, default=10)
-parser.add_argument('--pixel_weight', type=float, default=0.2, help='weight of pixel loss in generator')
+parser.add_argument('--Diters', type=int, default = 5, help='number of D iters per each G iter')
+parser.add_argument('--gp_weight', type=float, default = 10)
+parser.add_argument('--pixel_weight', type=float, default = 0.9, help='weight of pixel loss in generator')
+parser.add_argument('--mask_size', type=int, default = 3 , help='size of mask')
 opt = parser.parse_args()
 print(opt)
 
@@ -47,7 +48,7 @@ use_wandb = False
 if use_wandb:
     wandb.init(
         # set the wandb project where this run will be logged
-        project="3D-CVAE-WGAN-v1",
+        project="3D-AE-WGAN-v1",
         # track hyperparameters and run metadata
         config=opt
     )
@@ -66,15 +67,52 @@ def weights_init_normal(m):
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0)
 
+def apply_slw_mask(image, k = 5):
+        """
+        使用滑窗保留满足条件的区域，mask掉剩余区域。
+        滑窗内保留条件：
+        condition 1. 滑窗内像素值完全相等（滑窗尺寸：self.mask_para // 2 ）
+        """
+        shape = image.shape
+        depth, height, width = shape[2], shape[3], shape[4]
+        epsilon = 1e-5  # 选择一个适当的无穷小量
 
+        # mask img: true -> reserve, false -> mask
+        mask = torch.zeros((shape[0], 1, depth, height, width), dtype = torch.bool) # 默认是单通道的
+
+        # 计算padding大小
+
+        padding = (k - 1) // 2
+        
+        # 对图像进行padding，以确保窗口可以完整覆盖边界
+        padded_image = F.pad(image, (padding, padding, padding, padding, padding, padding), mode='constant', value=0)
+        
+        # 使用 unfold 创建滑动窗口
+        unfolded = padded_image.unfold(2, k, 1).unfold(3, k, 1).unfold(4, k, 1)
+        
+        # 展平窗口内的维度
+        unfolded = unfolded.contiguous().view(shape[0], shape[1], depth, height, width, -1)
+        
+        # 检查窗口内数值是否一致
+        mask = torch.all(unfolded == unfolded[:, :, :, :, :, [k**3 // 2]], dim=-1)
+
+        # 基于mask矩阵，随机对mask矩阵中需要保留的像素以0.85的概率保留、对需要mask的像素以0.15的概率保留。
+        masked_image = image.clone().detach()
+        prob = torch.rand(image.shape)
+        prob = prob.to(mask.device)
+        mask = torch.where(mask, prob < 0.85, prob < 0.15)
+        # 保留条件区域, mask为true的位置保留原值，否则全部赋值为0
+        # 在此处等价于masked_image = mask * masked_image
+        masked_image = torch.where(mask, masked_image, torch.tensor(0.0))
+        return masked_image, mask
 
 # Initialize generator and discriminator
-vae = CVAE(output_dim = 1, input_dim = 1, input_size = opt.img_size, noise_size = opt.noise_size)
+ae = AE(output_dim = 1, input_dim = 1)
 discriminator = Discriminator(output_dim = 1, input_dim = 1)
 
 if cuda:
-    vae.cuda()
-    discriminator.cuda()
+    ae.to('cuda')
+    discriminator.to('cuda')
     
 
 # Dataset loader
@@ -93,19 +131,21 @@ dataloader = DataLoader(
 # Loss Funcion
 criterion = nn.BCELoss()
 MSECriterion = nn.MSELoss()
-
+pixelwise_loss = torch.nn.L1Loss()
 if cuda:
-    criterion.cuda()
-    discriminator.cuda()
+    criterion.to('cuda')
+    discriminator.to('cuda')
+    pixelwise_loss.to('cuda')
+
 
 # Optimizers
-optimizer_VAE = torch.optim.Adam(vae.parameters(), lr=opt.lr, betas=(.9, .99))
+optimizer_AE = torch.optim.Adam(ae.parameters(), lr=opt.lr, betas=(.9, .99))
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(.9, .99))
 
 if opt.ckpt:
     ckpt = torch.load(opt.ckpt)
-    vae.load_state_dict(ckpt['vae'])
-    optimizer_VAE.load_state_dict(ckpt['optimizer_VAE'])
+    ae.load_state_dict(ckpt['ae'])
+    optimizer_AE.load_state_dict(ckpt['optimizer_AE'])
     discriminator.load_state_dict(ckpt['discriminator'])
     optimizer_D.load_state_dict(ckpt['optimizer_D'])
     start_epoch = ckpt['epoch']
@@ -113,7 +153,7 @@ if opt.ckpt:
     print(f"train from ckpt:{opt.ckpt}")
 else:
     # Initialize weights
-    vae.apply(weights_init_normal)
+    ae.apply(weights_init_normal)
     discriminator.apply(weights_init_normal)
     start_epoch = 0
     gen_iterations = 0
@@ -122,16 +162,21 @@ else:
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 def save_sample(batches_done):    
-
-    z = torch.rand(img.shape[0], nz)
-    z = Variable(z.type(Tensor))
-    fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
-    gen_img = vae.decoder(fake_data)    # [bs, 1, s, h, w]
+    img = next(iter(dataloader))[0:1, ...]
+    img = Variable(img.type(Tensor))
     
+    # Generate inpainted image
+    mask_imgs, mask = apply_slw_mask(img, opt.mask_size)
+    gen_img = ae(mask_imgs)
+    # Save sample
     # Save sample
     seq_len = opt.img_size
     for seq_i in range(seq_len):
-        save_image(gen_img[:, :, seq_i, :, :], "%s/%d_gen_%d.png" % (opt.out_dir, batches_done, seq_i - 1), nrow=5, normalize=True)
+        save_image(img[:, :, seq_i, :, :], "%s/%d_ori_%d.png" % (opt.out_dir, batches_done, seq_i), nrow=5, normalize=True)
+        save_image(gen_img[:, :, seq_i, :, :], "%s/%d_gen_%d.png" % (opt.out_dir, batches_done, seq_i), nrow=5, normalize=True)
+    save_image(mask, "%s/%d_mask.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
+
+
 
 def gradientPenalty(real_data, generated_data):
     batch_size = real_data.size()[0]
@@ -167,29 +212,17 @@ def gradientPenalty(real_data, generated_data):
     # Return gradient penalty
     return opt.gp_weight * ((gradients_norm - 1) ** 2).mean()
 
-def vae_loss(recon_x , x, mean, logstd):
-    # BCE = F.binary_cross_entropy(recon_x,x,reduction='sum')
-    MSE = MSECriterion(recon_x,x)
-    # 因为var是标准差的自然对数，先求自然对数然后平方转换成方差
-    var = torch.pow(torch.exp(logstd),2)
-    KLD = -0.5 * torch.sum(1 + torch.log(var) - torch.pow(mean,2) - var)
-    return MSE+KLD
-
-# input_size = [bs, 1]
-def porosityLoss(por, gen_por):
-    return MSECriterion(por, gen_por)
-
 
 # ----------
 #  Training
 # ----------
 if use_wandb:
-    wandb.watch((vae, discriminator), log = "all", log_freq=1)
+    wandb.watch((ae, discriminator), log = "all", log_freq=1)
 
 for epoch in range(start_epoch, opt.n_epochs):
     data_iter = iter(dataloader)
     i = 0
-    nz = opt.noise_size
+    mask_size = opt.mask_size
     while i < len(dataloader):
 
         # ---------------------
@@ -201,32 +234,22 @@ for epoch in range(start_epoch, opt.n_epochs):
             Diters = opt.Diters
         
         j = 0
-        for p in vae.parameters():
-                p.requires_grad = False
+        for p in ae.parameters():
+            p.requires_grad = False
         for p in discriminator.parameters():
-                p.requires_grad = True
+            p.requires_grad = True
         while j < Diters and i < len(dataloader):
             img = next(data_iter)
             img = Variable(img.type(Tensor))  # [bs, 1, s, h, w]
             img_size = opt.img_size
             feature_size = img_size // (2 ** 4)
-
-            # 随机产生一个潜在变量，然后通过decoder 产生生成图片
-            z = torch.rand(img.shape[0], nz)    
-            z = Variable(z.type(Tensor))
-            # 随机孔隙度标签, 范围在[0.3, 0.7]
-            fake_por = 0.3 + (0.7 - 0.3) * torch.rand(img.shape[0], 1)
-            fake_por = Variable(fake_por.type(Tensor))
-            embedding_c = vae.conditionEmbedding(fake_por)
-            z = torch.concat([z, embedding_c], dim = 1)
-            # 通过vae的decoder把潜在变量z变成虚假图片
-            fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
-            gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
-
+            masked_imgs, mask = apply_slw_mask(img, mask_size)
+            masked_imgs = Variable(masked_imgs.type(Tensor)) 
+            gen_imgs = ae(masked_imgs)
             # 分别给判别器判断
             real_loss = discriminator(img)
-            fake_loss = discriminator(gen_img)
-            gp = gradientPenalty(img, gen_img)
+            fake_loss = discriminator(gen_imgs)
+            gp = gradientPenalty(masked_imgs, gen_imgs)
 
             optimizer_D.zero_grad()
             d_loss = -real_loss.mean() + fake_loss.mean() + gp
@@ -236,51 +259,32 @@ for epoch in range(start_epoch, opt.n_epochs):
             i += 1
             j += 1
 
-
         # -----------------
-        #  (2) Train encoder network of VAE
+        #  (2) Train Generator
         # -----------------
-        for p in vae.parameters():
-                p.requires_grad = True
+        for p in ae.parameters():
+            p.requires_grad = True
         for p in discriminator.parameters():
-                p.requires_grad = False
+            p.requires_grad = False
+        optimizer_AE.zero_grad()
+        # 随机产生一个潜在变量，然后通过decoder 产生生成图片
+        masked_imgs, mask = apply_slw_mask(img, mask_size)
+        masked_imgs = Variable(masked_imgs.type(Tensor)) 
+        mask =  Variable(mask.type(Tensor)) 
+        gen_imgs = ae(masked_imgs)
+        g_adv = -discriminator(gen_imgs).mean()
+        g_pixel = pixelwise_loss(gen_imgs * mask, masked_imgs * mask).mean()
+        # g_pixel = pixelwise_loss(gen_imgs * masked_size, masked_imgs * masked_size)
 
-        optimizer_VAE.zero_grad()
-        # 计算原始输入图像的孔隙度
-        por = porosity(img)  # [bs, 1]
-        recon_img, mean, logstd = vae(img, por)
-        recon_por = porosity(recon_img)
-        vaeloss = vae_loss(gen_img, img, mean, logstd) + porosityLoss(por, recon_por)
-        vaeloss.backward()
-        optimizer_VAE.step()
-
-        # -----------------
-        #  (3) Train Generator
-        # -----------------
-        optimizer_VAE.zero_grad()
-        # 必须重新生成
-        z = torch.rand(img.shape[0], nz)    
-        z = Variable(z.type(Tensor))
-        fake_por = 0.3 + (0.7 - 0.3) * torch.rand(img.shape[0], 1)
-        fake_por = Variable(fake_por.type(Tensor))
-        embedding_c = vae.conditionEmbedding(fake_por)
-        z = torch.concat([z, embedding_c], dim = 1)
-        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
-        gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
-        gen_imgs_discri = discriminator(gen_img)
-        gen_por = porosity(gen_img)
-
-        g_loss = -gen_imgs_discri.mean()
-        por_loss = porosityLoss(fake_por, gen_por).mean()
-        g_loss += por_loss
+        w = opt.pixel_weight
+        g_loss = (1- w) * g_adv + w * g_pixel
         g_loss.backward()
-        optimizer_VAE.step()
-
+        optimizer_AE.step()
         gen_iterations += 1
 
         print(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [VAE Loss: %f] [por Loss: %f] [gp: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item() ,vaeloss.item(), por_loss.item(), gp.item())
+            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [pixel Loss: %f] [gp: %f]"
+            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item() ,g_pixel.item(),  gp.item())
         )
 
         # Generate sample at sample interval
@@ -291,8 +295,8 @@ for epoch in range(start_epoch, opt.n_epochs):
         
         if batches_done % opt.save_interval == 0:
             torch.save({'epoch': epoch, 
-                        'vae': vae.state_dict(), 
-                        'optimizer_VAE': optimizer_VAE.state_dict(), 
+                        'ae': ae.state_dict(), 
+                        'optimizer_AE': optimizer_AE.state_dict(), 
                         'g_loss': g_loss,
                         'discriminator': discriminator.state_dict(),
                         'optimizer_D': optimizer_D.state_dict(), 
@@ -301,12 +305,12 @@ for epoch in range(start_epoch, opt.n_epochs):
                         'gp': gp},  "%s/%d.pth" % (opt.out_dir, batches_done))
         
         if use_wandb:
-            wandb.log({'d_loss': d_loss, 'g_loss': g_loss, 'vae_loss:' : vaeloss ,'por_loss' : por_loss, 'gp': gp})
+            wandb.log({'d_loss': d_loss, 'g_loss': g_loss, 'g_pixel:' : g_pixel ,'gp': gp})
             
 
 torch.save({'epoch': epoch, 
-                        'vae': vae.state_dict(), 
-                        'optimizer_VAE': optimizer_VAE.state_dict(), 
+                        'ae': ae.state_dict(), 
+                        'optimizer_AE': optimizer_AE.state_dict(), 
                         'g_loss': g_loss,
                         'discriminator': discriminator.state_dict(),
                         'optimizer_D': optimizer_D.state_dict(), 

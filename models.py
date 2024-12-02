@@ -1,7 +1,12 @@
 import torch.nn as nn
 import torch
 from utils import *
-
+'''
+    本模型文件中的模型用于连续重构多张二维图像, 以ConvLSTM + WGAN为基本骨架
+    尝试了多个版本的优化, 包括：
+    - 生成器的解码器中叠加多层噪音、Unet结构、纠偏模型
+    - 判别器融合 motion 和 context 两条分支
+'''
 class CLSTMCell(nn.Module):
 
     def __init__(self, in_channels, out_channels, kernel_size, bias):
@@ -770,7 +775,69 @@ class GeneratorCorrection2(nn.Module):
         output = self.outc(output).unsqueeze(1) # [b, 1, 1, h, w], 为了便于后续seq_len维度上concat
         
         return output   
-     
+
+'''CVAE 网络
+   用于带条件标签的单张二维图像重构
+   input_dim: 输入图像channel通道数
+   output_dim: 生成图像channel通道数
+   input_size: 输入图像尺寸
+   noise_size: 中间层噪音尺寸
+   c_size: 条件变量嵌入编码的尺寸
+'''
+class CVAE(nn.Module):
+    def __init__(self, input_dim, output_dim, input_size, noise_size, c_size = 256):
+        super(CVAE, self).__init__()
+        # 定义编码器
+        self.encoder = nn.Sequential(
+            Down(input_dim, 32, normalize = False),  # size = ori_size // 2
+            Down(32, 64),    # size = ori_size // 4
+            Down(64, 128),    # size = ori_size // 8
+            Down(128, 256),    # size = ori_size // 16
+            Down(256, 512),    # size = ori_size // 32
+        )
+        self.feature_size = input_size // (2 ** 5)
+        self.encoder_fc1 = nn.Linear(256 * (self.feature_size ** 2) , noise_size)
+        self.encoder_fc2 = nn.Linear(256 * (self.feature_size ** 2), noise_size)
+        self.Sigmoid = nn.Sigmoid()
+
+        self.conditionEmbedding = nn.Sequential(
+            nn.Linear(1, c_size),
+            nn.LeakyReLU(0.2)
+        )
+
+        self.decoder_fc = nn.Linear(noise_size + c_size, 512 *  (self.feature_size ** 2))
+        # 做完decoder_fc计算需要做一个view调整维度
+        self.decoder = nn.Sequential(
+            Up(512, 256),   # size = ori_size // 16
+            Up(256, 128),   # size = ori_size // 8
+            Up(128, 64),   # size = ori_size // 4
+            Up(64, 32),   # size = ori_size // 2
+            Up(32, 16),   # size = ori_size
+            nn.Conv2d(16, output_dim, 3, 1, 1),
+            nn.Sigmoid()
+        )
+          
+    def noise_reparameterize(self,mean,logvar):
+        eps = torch.randn(mean.shape).to('cuda')
+        z = mean + eps * torch.exp(logvar)
+        return z
+
+    def forward(self, x, c):
+        out1, out2 = self.encoder(x), self.encoder(x)
+        mean = self.encoder_fc1(out1.view(out1.shape[0], -1))
+        logstd = self.encoder_fc2(out2.view(out2.shape[0], -1))
+        z = self.noise_reparameterize(mean, logstd)
+        # 使用输入的孔隙度标签作为条件
+        if torch.cuda.is_available():
+            c = c.to('cuda')
+        embedding_c = self.conditionEmbedding(c)
+        z = torch.concat([z, embedding_c], dim = 1)
+        out3 = self.decoder_fc(z)
+        out3 = out3.view(out3.shape[0], 512, self.feature_size, self.feature_size)
+        out3 = self.decoder(out3)
+        return out3, mean, logstd
+
+
 class Discriminator(nn.Module):
     def __init__(self, output_dim, input_dim, hidden_dim, kernel_size, num_layers,
                  batch_first=True, bias=True, return_all_layers=False):

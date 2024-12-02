@@ -10,7 +10,7 @@ from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from dataset import *
-from models3D import *
+from models2D import *
 import torch
 import wandb
 import random
@@ -30,8 +30,8 @@ parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of firs
 parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads to use during batch generation")
 parser.add_argument("--ckpt", type=str, default='', help="checkpoint of generator and discriminator")
 parser.add_argument("--ori_size", type=int, default = 1200, help="size of each image dimension in dataset")
-parser.add_argument("--img_size", type=int, default = 64, help="size of each image dimension for training")
-parser.add_argument("--noise_size", type=int, default = 64, help="size of noise  dimension for training")
+parser.add_argument("--img_size", type=int, default = 512, help="size of each image dimension for training")
+parser.add_argument("--noise_size", type=int, default = 256, help="size of noise  dimension for training")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=1000, help="interval between image sampling")
 parser.add_argument("--save_interval", type=int, default=1000, help="interval between ckpt save")
@@ -47,7 +47,7 @@ use_wandb = False
 if use_wandb:
     wandb.init(
         # set the wandb project where this run will be logged
-        project="3D-CVAE-WGAN-v1",
+        project="2D-CVAE-WGAN-v1",
         # track hyperparameters and run metadata
         config=opt
     )
@@ -68,7 +68,7 @@ def weights_init_normal(m):
 
 
 
-# Initialize generator and discriminator
+# 默认条件标签变量的维度 = 256
 vae = CVAE(output_dim = 1, input_dim = 1, input_size = opt.img_size, noise_size = opt.noise_size)
 discriminator = Discriminator(output_dim = 1, input_dim = 1)
 
@@ -209,7 +209,7 @@ for epoch in range(start_epoch, opt.n_epochs):
             img = next(data_iter)
             img = Variable(img.type(Tensor))  # [bs, 1, s, h, w]
             img_size = opt.img_size
-            feature_size = img_size // (2 ** 4)
+            feature_size = img_size // (2 ** 5)
 
             # 随机产生一个潜在变量，然后通过decoder 产生生成图片
             z = torch.rand(img.shape[0], nz)    
@@ -220,7 +220,7 @@ for epoch in range(start_epoch, opt.n_epochs):
             embedding_c = vae.conditionEmbedding(fake_por)
             z = torch.concat([z, embedding_c], dim = 1)
             # 通过vae的decoder把潜在变量z变成虚假图片
-            fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
+            fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)   # [bs, 1, s, h, w]
             gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
 
             # 分别给判别器判断
@@ -265,7 +265,7 @@ for epoch in range(start_epoch, opt.n_epochs):
         fake_por = Variable(fake_por.type(Tensor))
         embedding_c = vae.conditionEmbedding(fake_por)
         z = torch.concat([z, embedding_c], dim = 1)
-        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
+        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)   # [bs, 1, s, h, w]
         gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
         gen_imgs_discri = discriminator(gen_img)
         gen_por = porosity(gen_img)

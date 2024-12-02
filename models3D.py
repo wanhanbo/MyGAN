@@ -1,7 +1,13 @@
 import torch.nn as nn
 import torch
 
-
+'''
+    本模型文件中的模型用于直接重构三维图像,
+    尝试了多种模型 包括：
+    - 基础WGAN
+    - WGAN-VAE
+    - WGAN-ContextAE
+'''
 # 基本的下采样模块
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
@@ -134,6 +140,60 @@ class Discriminator(torch.nn.Module):
         out = self.encoder(x)
         out = self.classfier(out)
         return out
+
+'''Context AE 网络
+   input_dim: 输入图像channel通道数
+   output_dim: 生成图像channel通道数
+'''
+class AE(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(AE, self).__init__()
+        # 定义编码器
+        self.encoder = nn.Sequential(
+            Down(input_dim, 32, normalize = False),  # size = ori_size // 2
+            Down(32, 64),    # size = ori_size // 4
+            Down(64, 128),    # size = ori_size // 8
+            Down(128, 256),    # size = ori_size // 16
+        )
+        self.bridge = nn.Sequential(
+            nn.Conv3d(384, 256, 3, 1, 1)
+        )
+
+        self.decoder = nn.Sequential(
+            Up(256, 128),   # size = ori_size // 8
+            Up(128, 64),   # size = ori_size // 4
+            Up(64, 32),   # size = ori_size // 2
+            Up(32, 16),   # size = ori_size
+            nn.Conv3d(16, output_dim, 3, 1, 1),
+            nn.Sigmoid()
+        )
+          
+    def noise_reparameterize(self,mean,logvar):
+        eps = torch.randn(mean.shape).to('cuda')
+        z = mean + eps * torch.exp(logvar)
+        return z
+
+    def forward(self, x):
+       # 在channel纬度叠加噪音
+        def concatNoise(x, shape):
+            noise = torch.rand(shape)
+            if torch.cuda.is_available():
+                noise = noise.cuda()
+            x = torch.cat([x, noise], dim=1)
+            return x
+
+        """
+        x : [b, t, c, h, w]
+        """
+        output = self.encoder(x)
+        output = concatNoise(output,[output.shape[0], 128, output.shape[2], output.shape[3], output.shape[4]]) 
+
+        output = self.bridge(output)
+
+        output = self.decoder(output)
+        
+        return output
+
 
 '''VAE 网络
    input_dim: 输入图像channel通道数
