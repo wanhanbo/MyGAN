@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
-from dataset import *
+from dataset3D import *
 from models3D import *
 import torch
 import wandb

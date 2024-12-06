@@ -3,10 +3,11 @@ import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 import random
+import numpy as np
 from PIL import Image
 from torchvision.transforms import ToTensor
 import glob
-
+from skimage.morphology import skeletonize, thin
 
 def random_crop_3d(tensor: torch.tensor, crop_size: tuple) -> torch.tensor:
     assert len(tensor.shape) == 3, "输入张量必须是三维的"

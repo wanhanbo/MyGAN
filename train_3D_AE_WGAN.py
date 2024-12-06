@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
-from dataset import *
+from dataset3D import *
 from models3D import *
 import torch
 import wandb
@@ -68,43 +68,69 @@ def weights_init_normal(m):
         torch.nn.init.constant_(m.bias.data, 0.0)
 
 def apply_slw_mask(image, k = 5):
-        """
-        使用滑窗保留满足条件的区域，mask掉剩余区域。
-        滑窗内保留条件：
-        condition 1. 滑窗内像素值完全相等（滑窗尺寸：self.mask_para // 2 ）
-        """
-        shape = image.shape
-        depth, height, width = shape[2], shape[3], shape[4]
-        epsilon = 1e-5  # 选择一个适当的无穷小量
+    """
+    使用滑窗保留满足条件的区域，mask掉剩余区域。
+    滑窗内保留条件：
+    condition 1. 滑窗内像素值完全相等（滑窗尺寸：self.mask_para // 2 ）
+    """
+    shape = image.shape
+    depth, height, width = shape[2], shape[3], shape[4]
+    epsilon = 1e-5  # 选择一个适当的无穷小量
 
-        # mask img: true -> reserve, false -> mask
-        mask = torch.zeros((shape[0], 1, depth, height, width), dtype = torch.bool) # 默认是单通道的
+    # mask img: true -> reserve, false -> mask
+    mask = torch.zeros((shape[0], 1, depth, height, width), dtype = torch.bool) # 默认是单通道的
 
-        # 计算padding大小
+    # 计算padding大小
 
-        padding = (k - 1) // 2
-        
-        # 对图像进行padding，以确保窗口可以完整覆盖边界
-        padded_image = F.pad(image, (padding, padding, padding, padding, padding, padding), mode='constant', value=0)
-        
-        # 使用 unfold 创建滑动窗口
-        unfolded = padded_image.unfold(2, k, 1).unfold(3, k, 1).unfold(4, k, 1)
-        
-        # 展平窗口内的维度
-        unfolded = unfolded.contiguous().view(shape[0], shape[1], depth, height, width, -1)
-        
-        # 检查窗口内数值是否一致
-        mask = torch.all(unfolded == unfolded[:, :, :, :, :, [k**3 // 2]], dim=-1)
+    padding = (k - 1) // 2
+    
+    # 对图像进行padding，以确保窗口可以完整覆盖边界
+    padded_image = F.pad(image, (padding, padding, padding, padding, padding, padding), mode='constant', value=0)
+    
+    # 使用 unfold 创建滑动窗口
+    unfolded = padded_image.unfold(2, k, 1).unfold(3, k, 1).unfold(4, k, 1)
+    
+    # 展平窗口内的维度
+    unfolded = unfolded.contiguous().view(shape[0], shape[1], depth, height, width, -1)
+    
+    # 检查窗口内数值是否一致
+    mask = torch.all(unfolded == unfolded[:, :, :, :, :, [k**3 // 2]], dim=-1)
 
-        # 基于mask矩阵，随机对mask矩阵中需要保留的像素以0.85的概率保留、对需要mask的像素以0.15的概率保留。
-        masked_image = image.clone().detach()
-        prob = torch.rand(image.shape)
-        prob = prob.to(mask.device)
-        mask = torch.where(mask, prob < 0.85, prob < 0.15)
-        # 保留条件区域, mask为true的位置保留原值，否则全部赋值为0
-        # 在此处等价于masked_image = mask * masked_image
-        masked_image = torch.where(mask, masked_image, torch.tensor(0.0))
-        return masked_image, mask
+    # 基于mask矩阵，随机对mask矩阵中需要保留的像素以0.85的概率保留、对需要mask的像素以0.15的概率保留。
+    masked_image = image.clone().detach()
+    prob = torch.rand(image.shape)
+    prob = prob.to(mask.device)
+    mask = torch.where(mask, prob < 0.85, prob < 0.15)
+    # 保留条件区域, mask为true的位置保留原值，否则全部赋值为0
+    # 在此处等价于masked_image = mask * masked_image
+    masked_image = torch.where(mask, masked_image, torch.tensor(0.0))
+    return masked_image, mask
+
+def apply3DRandomMask(image, ratio = 0.5):
+    """
+    对5D张量 (batchsize, channel, depth, height, width) 按照给定比例进行随机mask
+    
+    参数:
+    - image: 5D 张量，形状为 (batchsize, channel, depth, height, width)
+    - ratio: float, 保留的像素比例，范围在 [0, 1]
+    
+    返回:
+    - masked_image: 应用mask后的图像
+    - mask: 布尔mask矩阵,形状与image相同,True表示未被mask的位置
+    """
+    # 获取图像尺寸
+    batch_size, channels, depth, height, width = image.shape
+    
+    # 生成与image相同形状的均匀分布随机数张量
+    rand_tensor = torch.rand_like(image)
+    
+    # 根据ratio确定哪些位置会被保留
+    mask = rand_tensor < ratio
+    
+    # 创建masked_image：保留mask为True的位置的原始值，其他位置设为0
+    masked_image = torch.where(mask, image, torch.tensor(0.0, device=image.device))
+    
+    return masked_image, mask
 
 # Initialize generator and discriminator
 ae = AE(output_dim = 1, input_dim = 1)
@@ -139,8 +165,10 @@ if cuda:
 
 
 # Optimizers
-optimizer_AE = torch.optim.Adam(ae.parameters(), lr=opt.lr, betas=(.9, .99))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(.9, .99))
+# optimizer_AE = torch.optim.Adam(ae.parameters(), lr=opt.lr, betas=(.9, .99))
+# optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(.9, .99))
+optimizer_AE = torch.optim.RMSprop(ae.parameters(), lr=0.01, alpha=opt.lr, eps=1e-08)
+optimizer_D = torch.optim.RMSprop(discriminator.parameters(), lr=opt.lr, alpha=0.99, eps=1e-08)
 
 if opt.ckpt:
     ckpt = torch.load(opt.ckpt)
@@ -167,6 +195,7 @@ def save_sample(batches_done):
     
     # Generate inpainted image
     mask_imgs, mask = apply_slw_mask(img, opt.mask_size)
+    # mask_imgs, mask = apply3DRandomMask(img, ratio = 0.5)
     gen_img = ae(mask_imgs)
     # Save sample
     # Save sample
@@ -174,7 +203,7 @@ def save_sample(batches_done):
     for seq_i in range(seq_len):
         save_image(img[:, :, seq_i, :, :], "%s/%d_ori_%d.png" % (opt.out_dir, batches_done, seq_i), nrow=5, normalize=True)
         save_image(gen_img[:, :, seq_i, :, :], "%s/%d_gen_%d.png" % (opt.out_dir, batches_done, seq_i), nrow=5, normalize=True)
-    save_image(mask, "%s/%d_mask.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
+    # save_image(mask, "%s/%d_mask.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
 
 
 

@@ -62,7 +62,7 @@ def weights_init_normal(m):
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
         torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find("BatchNorm3d") != -1:
+    elif classname.find("BatchNorm2d") != -1:
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0)
 
@@ -84,7 +84,7 @@ transforms_ = [
 ]
 
 dataloader = DataLoader(
-    ImageDataset3D(opt.root_dir, ori_size = opt.ori_size, img_size= opt.img_size, transforms_=transforms_),
+    SingleImageDataset(opt.root_dir, img_size= opt.img_size, transforms_=transforms_),
     batch_size=opt.batch_size,
     shuffle=True,
     num_workers=opt.n_cpu,
@@ -135,9 +135,9 @@ def save_sample(batches_done):
 
 def gradientPenalty(real_data, generated_data):
     batch_size = real_data.size()[0]
-    # [b, c, step, y, x]
+    # [b, c, y, x]
     # Calculate interpolation
-    alpha = torch.rand(batch_size, 1, 1, 1, 1)
+    alpha = torch.rand(batch_size, 1, 1, 1)
     alpha = alpha.expand_as(real_data)
     if cuda:
         alpha = alpha.cuda()
@@ -207,7 +207,7 @@ for epoch in range(start_epoch, opt.n_epochs):
                 p.requires_grad = True
         while j < Diters and i < len(dataloader):
             img = next(data_iter)
-            img = Variable(img.type(Tensor))  # [bs, 1, s, h, w]
+            img = Variable(img.type(Tensor))  # [bs, 1, h, w]
             img_size = opt.img_size
             feature_size = img_size // (2 ** 5)
 
@@ -220,8 +220,8 @@ for epoch in range(start_epoch, opt.n_epochs):
             embedding_c = vae.conditionEmbedding(fake_por)
             z = torch.concat([z, embedding_c], dim = 1)
             # 通过vae的decoder把潜在变量z变成虚假图片
-            fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)   # [bs, 1, s, h, w]
-            gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
+            fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)   # [bs, 1, h, w]
+            gen_img = vae.decoder(fake_data)   # [bs, 1, h, w]
 
             # 分别给判别器判断
             real_loss = discriminator(img)
@@ -265,8 +265,8 @@ for epoch in range(start_epoch, opt.n_epochs):
         fake_por = Variable(fake_por.type(Tensor))
         embedding_c = vae.conditionEmbedding(fake_por)
         z = torch.concat([z, embedding_c], dim = 1)
-        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)   # [bs, 1, s, h, w]
-        gen_img = vae.decoder(fake_data)   # [bs, 1, s, h, w]
+        fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)  # [bs, 1, h, w]
+        gen_img = vae.decoder(fake_data)   # [bs, 1, h, w]
         gen_imgs_discri = discriminator(gen_img)
         gen_por = porosity(gen_img)
 
