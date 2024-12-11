@@ -1,5 +1,1 @@
-x = [1,2,3]
-z = (2 ** 3)
-
-print('x =',x)
-print(z)
+print(f''.join(filter(str.isdigit, '4#32')))

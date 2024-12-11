@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from dataset3D import *
 from models3D import *
+from utils import *
 import torch
 import wandb
 import random
@@ -21,7 +22,7 @@ import torch.nn.functional as F
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--root_dir", type=str, default="./input_filterd", help="root dir of img dataset")
+parser.add_argument("--root_dir", nargs='*', type=str, default=["./input_filterd"], help="root dir of img dataset")
 parser.add_argument("--out_dir", type=str, default="./1010", help="out dir to save the generated image")
 parser.add_argument("--n_epochs", type=int, default=600, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=2, help="size of the batches")
@@ -32,6 +33,7 @@ parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads 
 parser.add_argument("--ckpt", type=str, default='', help="checkpoint of generator and discriminator")
 parser.add_argument("--ori_size", type=int, default = 1200, help="size of each image dimension in dataset")
 parser.add_argument("--img_size", type=int, default = 256, help="size of each image dimension for training")
+parser.add_argument("--noise_size", type=int, default = 128, help="size of noise")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=1000, help="interval between image sampling")
 parser.add_argument("--save_interval", type=int, default=1000, help="interval between ckpt save")
@@ -67,73 +69,8 @@ def weights_init_normal(m):
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0)
 
-def apply_slw_mask(image, k = 5):
-    """
-    使用滑窗保留满足条件的区域，mask掉剩余区域。
-    滑窗内保留条件：
-    condition 1. 滑窗内像素值完全相等（滑窗尺寸：self.mask_para // 2 ）
-    """
-    shape = image.shape
-    depth, height, width = shape[2], shape[3], shape[4]
-    epsilon = 1e-5  # 选择一个适当的无穷小量
-
-    # mask img: true -> reserve, false -> mask
-    mask = torch.zeros((shape[0], 1, depth, height, width), dtype = torch.bool) # 默认是单通道的
-
-    # 计算padding大小
-
-    padding = (k - 1) // 2
-    
-    # 对图像进行padding，以确保窗口可以完整覆盖边界
-    padded_image = F.pad(image, (padding, padding, padding, padding, padding, padding), mode='constant', value=0)
-    
-    # 使用 unfold 创建滑动窗口
-    unfolded = padded_image.unfold(2, k, 1).unfold(3, k, 1).unfold(4, k, 1)
-    
-    # 展平窗口内的维度
-    unfolded = unfolded.contiguous().view(shape[0], shape[1], depth, height, width, -1)
-    
-    # 检查窗口内数值是否一致
-    mask = torch.all(unfolded == unfolded[:, :, :, :, :, [k**3 // 2]], dim=-1)
-
-    # 基于mask矩阵，随机对mask矩阵中需要保留的像素以0.85的概率保留、对需要mask的像素以0.15的概率保留。
-    masked_image = image.clone().detach()
-    prob = torch.rand(image.shape)
-    prob = prob.to(mask.device)
-    mask = torch.where(mask, prob < 0.85, prob < 0.15)
-    # 保留条件区域, mask为true的位置保留原值，否则全部赋值为0
-    # 在此处等价于masked_image = mask * masked_image
-    masked_image = torch.where(mask, masked_image, torch.tensor(0.0))
-    return masked_image, mask
-
-def apply3DRandomMask(image, ratio = 0.5):
-    """
-    对5D张量 (batchsize, channel, depth, height, width) 按照给定比例进行随机mask
-    
-    参数:
-    - image: 5D 张量，形状为 (batchsize, channel, depth, height, width)
-    - ratio: float, 保留的像素比例，范围在 [0, 1]
-    
-    返回:
-    - masked_image: 应用mask后的图像
-    - mask: 布尔mask矩阵,形状与image相同,True表示未被mask的位置
-    """
-    # 获取图像尺寸
-    batch_size, channels, depth, height, width = image.shape
-    
-    # 生成与image相同形状的均匀分布随机数张量
-    rand_tensor = torch.rand_like(image)
-    
-    # 根据ratio确定哪些位置会被保留
-    mask = rand_tensor < ratio
-    
-    # 创建masked_image：保留mask为True的位置的原始值，其他位置设为0
-    masked_image = torch.where(mask, image, torch.tensor(0.0, device=image.device))
-    
-    return masked_image, mask
-
 # Initialize generator and discriminator
-ae = AE(output_dim = 1, input_dim = 1)
+ae = AE(output_dim = 1, input_dim = 1, noise_size = opt.noise_size)
 discriminator = Discriminator(output_dim = 1, input_dim = 1)
 
 if cuda:
@@ -164,7 +101,7 @@ if cuda:
     pixelwise_loss.to('cuda')
 
 
-# Optimizers
+# Optimizers 使用RMSProp优化器
 # optimizer_AE = torch.optim.Adam(ae.parameters(), lr=opt.lr, betas=(.9, .99))
 # optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(.9, .99))
 optimizer_AE = torch.optim.RMSprop(ae.parameters(), lr=0.01, alpha=opt.lr, eps=1e-08)
@@ -252,6 +189,8 @@ for epoch in range(start_epoch, opt.n_epochs):
     data_iter = iter(dataloader)
     i = 0
     mask_size = opt.mask_size
+    pre_save_sample = 0
+    pre_save_data = 0
     while i < len(dataloader):
 
         # ---------------------
@@ -318,11 +257,13 @@ for epoch in range(start_epoch, opt.n_epochs):
 
         # Generate sample at sample interval
         batches_done = epoch * len(dataloader) + i
-        if batches_done % opt.sample_interval == 0:
+        if batches_done - pre_save_sample > opt.sample_interval:
             save_sample(batches_done)
+            pre_save_sample = batches_done
         
         
-        if batches_done % opt.save_interval == 0:
+        if batches_done  - pre_save_data> opt.save_interval:
+            pre_save_data = batches_done
             torch.save({'epoch': epoch, 
                         'ae': ae.state_dict(), 
                         'optimizer_AE': optimizer_AE.state_dict(), 

@@ -75,8 +75,70 @@ class CommonUp(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
+'''二维Conditional Context AE 网络
+   input_dim: 输入图像channel通道数
+   output_dim: 生成图像channel通道数
+   noise_size: 噪音长度
+   cond_size: 条件变量编码长度
+'''
+class CAE(nn.Module):
+    def __init__(self, input_dim, output_dim, noise_size = 256, cond_size = 256):
+        super(CAE, self).__init__()
+        # 定义编码器
+        self.noise_size = noise_size
+        self.cond_size = cond_size
+        self.encoder = nn.Sequential(
+            Down(input_dim, 32, normalize = False),  # size = ori_size // 2
+            Down(32, 64),    # size = ori_size // 4
+            Down(64, 128),    # size = ori_size // 8
+            Down(128, 256),    # size = ori_size // 16
+            Down(256, 512),    # size = ori_size // 32
+        )
+        self.conditionEmbedding = nn.Sequential(
+            nn.Linear(1, cond_size),
+            nn.LeakyReLU(0.2)
+        )
+        self.bridge = nn.Sequential(
+            nn.Conv3d(512 + self.noise_size + self.c_size, 512, 3, 1, 1)
+        )
 
-'''CVAE 网络
+        self.decoder = nn.Sequential(
+            CommonUp(512, 256),   # size = ori_size // 16
+            CommonUp(256, 128),   # size = ori_size // 8
+            CommonUp(128, 64),   # size = ori_size // 4
+            CommonUp(64, 32),   # size = ori_size // 2
+            CommonUp(32, 16),   # size = ori_size
+            nn.Conv2d(16, output_dim, 3, 1, 1),
+            nn.Sigmoid()
+        )
+          
+
+    def forward(self, x, c):
+       # 在channel纬度叠加噪音
+        def concatNoise(x, shape):
+            noise = torch.rand(shape)
+            if torch.cuda.is_available():
+                noise = noise.cuda()
+            x = torch.cat([x, noise], dim=1)
+            return x
+
+        """
+        x : [b, t, c, h, w]
+        """
+        output = self.encoder(x)
+        output = concatNoise(output,[output.shape[0], self.noise_size, output.shape[2], output.shape[3]]) 
+        embedding_c = self.conditionEmbedding(c)
+        output = torch.concat([output, embedding_c], dim = 1)
+
+        output = self.bridge(output)
+
+        output = self.decoder(output)
+        
+        return output
+
+
+
+'''二维CVAE 网络
    用于带条件标签的单张二维图像重构
    input_dim: 输入图像channel通道数
    output_dim: 生成图像channel通道数
@@ -168,10 +230,10 @@ def porosity(img):
     thresholded_tensor = (img < 0.5).float()  # 转为浮点数，0 或 1
 
     # 2. 求和得到小于 0.5 的像素总数
-    count_below_threshold = thresholded_tensor.sum(dim=(2, 3, 4))  # 形状为 [bs, 1]
+    count_below_threshold = thresholded_tensor.sum(dim=(2, 3))  # 形状为 [bs, 1]
 
     # 3. 计算总像素数
-    total_pixels = img.shape[2] * img.shape[3] * img.shape[4]  # 三维模型的总像素数
+    total_pixels = img.shape[2] * img.shape[3]  # 二维模型的总像素数
 
     # 4. 计算孔隙度
     porosity = count_below_threshold / total_pixels  # 形状为 [bs, 1]

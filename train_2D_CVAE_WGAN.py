@@ -99,8 +99,8 @@ if cuda:
     discriminator.cuda()
 
 # Optimizers
-optimizer_VAE = torch.optim.Adam(vae.parameters(), lr=opt.lr, betas=(.9, .99))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(.9, .99))
+optimizer_VAE = torch.optim.RMSprop(vae.parameters(), alpha=opt.lr, eps=1e-08)
+optimizer_D =  torch.optim.RMSprop(discriminator.parameters(), alpha=opt.lr, eps=1e-08)
 
 if opt.ckpt:
     ckpt = torch.load(opt.ckpt)
@@ -129,9 +129,7 @@ def save_sample(batches_done):
     gen_img = vae.decoder(fake_data)    # [bs, 1, s, h, w]
     
     # Save sample
-    seq_len = opt.img_size
-    for seq_i in range(seq_len):
-        save_image(gen_img[:, :, seq_i, :, :], "%s/%d_gen_%d.png" % (opt.out_dir, batches_done, seq_i - 1), nrow=5, normalize=True)
+    save_image(gen_img[:, :, :, :], "%s/%d_gen.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
 
 def gradientPenalty(real_data, generated_data):
     batch_size = real_data.size()[0]

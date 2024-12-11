@@ -146,9 +146,10 @@ class Discriminator(torch.nn.Module):
    output_dim: 生成图像channel通道数
 '''
 class AE(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, noise_size = 128):
         super(AE, self).__init__()
         # 定义编码器
+        self.noise_size = noise_size
         self.encoder = nn.Sequential(
             Down(input_dim, 32, normalize = False),  # size = ori_size // 2
             Down(32, 64),    # size = ori_size // 4
@@ -156,7 +157,7 @@ class AE(nn.Module):
             Down(128, 256),    # size = ori_size // 16
         )
         self.bridge = nn.Sequential(
-            nn.Conv3d(384, 256, 3, 1, 1)
+            nn.Conv3d(256 + self.noise_size, 256, 3, 1, 1)
         )
 
         self.decoder = nn.Sequential(
@@ -168,10 +169,6 @@ class AE(nn.Module):
             nn.Sigmoid()
         )
           
-    def noise_reparameterize(self,mean,logvar):
-        eps = torch.randn(mean.shape).to('cuda')
-        z = mean + eps * torch.exp(logvar)
-        return z
 
     def forward(self, x):
        # 在channel纬度叠加噪音
@@ -186,7 +183,7 @@ class AE(nn.Module):
         x : [b, t, c, h, w]
         """
         output = self.encoder(x)
-        output = concatNoise(output,[output.shape[0], 128, output.shape[2], output.shape[3], output.shape[4]]) 
+        output = concatNoise(output,[output.shape[0], self.noise_size, output.shape[2], output.shape[3], output.shape[4]]) 
 
         output = self.bridge(output)
 

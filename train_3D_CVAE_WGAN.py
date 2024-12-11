@@ -20,7 +20,7 @@ from skimage import morphology
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--root_dir", type=str, default="./input_filterd", help="root dir of img dataset")
+parser.add_argument("--root_dir", nargs='*', type=str, default=["./input_filterd"], help="root dir of img dataset")
 parser.add_argument("--out_dir", type=str, default="./1010", help="out dir to save the generated image")
 parser.add_argument("--n_epochs", type=int, default=600, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=2, help="size of the batches")
