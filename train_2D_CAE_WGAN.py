@@ -40,7 +40,7 @@ parser.add_argument("--save_interval", type=int, default=1000, help="interval be
 parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
 parser.add_argument('--gp_weight', type=float, default=10)
 parser.add_argument('--mask_size', type=int, default = 3 , help='size of mask')
-parser.add_argument('--pixel_weight', type=float, default=5, help='weight of pixel loss in generator')
+parser.add_argument('--pixel_weight', type=float, default=10, help='weight of pixel loss in generator')
 parser.add_argument('--cond_weight', type=float, default=10, help='weight of pixel loss in generator')
 
 opt = parser.parse_args()
@@ -132,14 +132,16 @@ def save_sample(batches_done):
     img = Variable(img.type(Tensor))
     
     # Generate inpainted image
-    mask_imgs, mask = apply_slw_mask(img, opt.mask_size)
-    # mask_imgs, mask = apply3DRandomMask(img, ratio = 0.5)
+    # mask_imgs, mask = apply_slw_mask(img, opt.mask_size)
+    # mask_imgs, mask = apply2DRandomMask(img, ratio = 0.5)
+    mask_imgs, mask = apply2DSkeletonMask(img)
     fake_por = 0.3 + (0.7 - 0.3) * torch.rand(img.shape[0], 1)
     fake_por = Variable(fake_por.type(Tensor))
     gen_img = generator(mask_imgs, fake_por) 
 
     # Save sample
     save_image(img[:, :, :, :], "%s/%d_ori.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
+    save_image(mask_imgs[:, :, :, :], "%s/%d_mask.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
     save_image(gen_img[:, :, :, :], "%s/%d_gen.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
 
 def gradientPenalty(real_data, generated_data):
@@ -176,16 +178,17 @@ def gradientPenalty(real_data, generated_data):
     # Return gradient penalty
     return opt.gp_weight * ((gradients_norm - 1) ** 2).mean()
 
-# input_size = [bs, 1]
-def porosityLoss(por, gen_por):
-    return MSECriterion(por, gen_por)
-
 def sum_normalize(values):
     values = np.array(values)
     total_sum = np.sum(values)
     if total_sum == 0:
         return np.full_like(values, 1/len(values))  # 如果总和为0，返回全1/n
     return values / total_sum
+
+# input_size = [bs, 1]
+def porosityLoss(por, gen_por):
+    return MSECriterion(por, gen_por)
+
 
 # ----------
 #  Training
@@ -225,7 +228,9 @@ for epoch in range(start_epoch, opt.n_epochs):
             fake_por = 0.3 + (0.7 - 0.3) * torch.rand(img.shape[0], 1)
             fake_por = Variable(fake_por.type(Tensor))
 
-            masked_imgs, mask = apply_slw_mask(img, mask_size)
+            # masked_imgs, mask = apply_slw_mask(img, mask_size)
+            # masked_imgs, mask = apply2DRandomMask(img, ratio = 0.5)
+            masked_imgs, mask = apply2DSkeletonMask(img)
             masked_imgs = Variable(masked_imgs.type(Tensor)) 
             gen_imgs = generator(masked_imgs, fake_por)
             # 分别给判别器判断
@@ -251,9 +256,11 @@ for epoch in range(start_epoch, opt.n_epochs):
             p.requires_grad = False
         optimizer_G.zero_grad()
 
-        masked_imgs, mask = apply_slw_mask(img, mask_size)
+        # masked_imgs, mask = apply_slw_mask(img, mask_size)
+        # masked_imgs, mask = apply2DRandomMask(img, ratio = 0.5)
+        masked_imgs, mask = apply2DSkeletonMask(img)
         masked_imgs = Variable(masked_imgs.type(Tensor)) 
-        mask =  Variable(mask.type(Tensor)) 
+        # mask =  Variable(mask.type(Tensor)) 
 
         fake_por = 0.3 + (0.7 - 0.3) * torch.rand(img.shape[0], 1)
         fake_por = Variable(fake_por.type(Tensor))
@@ -268,11 +275,12 @@ for epoch in range(start_epoch, opt.n_epochs):
         g_por = porosityLoss(fake_por, gen_por).mean()
         
         # 3. context pixel 损失
-        g_pixel = pixelwise_loss(gen_imgs * mask, masked_imgs * mask).mean()
+        # g_pixel = pixelwise_loss(gen_imgs * mask, masked_imgs * mask).mean()
+        g_pixel = pixelwise_loss(gen_imgs[mask], masked_imgs[mask]).mean()
 
         weights = sum_normalize([1, opt.pixel_weight, opt.cond_weight])
         g_loss = weights[0] * g_adv + weights[1] * g_pixel + weights[2] * g_por
-        
+
         g_loss.backward()
         optimizer_G.step()
 
@@ -284,7 +292,7 @@ for epoch in range(start_epoch, opt.n_epochs):
         )
 
         # Generate sample at sample interval
-        batches_done = epoch * len(dataloader) + i        
+        batches_done = epoch * len(dataloader) + i
         
         if batches_done - pre_save_data >= opt.save_interval:
             pre_save_data = batches_done
