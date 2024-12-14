@@ -82,11 +82,12 @@ class CommonUp(nn.Module):
    cond_size: 条件变量编码长度
 '''
 class CAE(nn.Module):
-    def __init__(self, input_dim, output_dim, noise_size = 256, cond_size = 256):
+    def __init__(self, input_dim, output_dim, input_size, noise_size = 256, cond_size = 256):
         super(CAE, self).__init__()
         # 定义编码器
         self.noise_size = noise_size
         self.cond_size = cond_size
+        self.feature_size = input_size // (2 ** 5)
         self.encoder = nn.Sequential(
             Down(input_dim, 32, normalize = False),  # size = ori_size // 2
             Down(32, 64),    # size = ori_size // 4
@@ -96,10 +97,14 @@ class CAE(nn.Module):
         )
         self.conditionEmbedding = nn.Sequential(
             nn.Linear(1, cond_size),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(cond_size),
+            nn.Linear(cond_size, cond_size * (self.feature_size ** 2)),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(cond_size * (self.feature_size ** 2))
         )
         self.bridge = nn.Sequential(
-            nn.Conv3d(512 + self.noise_size + self.c_size, 512, 3, 1, 1)
+            nn.Conv2d(512 + self.noise_size + self.cond_size, 512, 3, 1, 1)
         )
 
         self.decoder = nn.Sequential(
@@ -128,6 +133,7 @@ class CAE(nn.Module):
         output = self.encoder(x)
         output = concatNoise(output,[output.shape[0], self.noise_size, output.shape[2], output.shape[3]]) 
         embedding_c = self.conditionEmbedding(c)
+        embedding_c = embedding_c.view(x.shape[0], self.cond_size, self.feature_size, self.feature_size)
         output = torch.concat([output, embedding_c], dim = 1)
 
         output = self.bridge(output)
@@ -136,6 +142,85 @@ class CAE(nn.Module):
         
         return output
 
+'''二维Conditional Context AE 网络
+   input_dim: 输入图像channel通道数
+   output_dim: 生成图像channel通道数
+   noise_size: 噪音长度
+   cond_size: 条件变量编码长度
+'''
+class MNCAE(nn.Module):
+    def __init__(self, input_dim, output_dim, input_size, noise_size = 256, cond_size = 256):
+        super(MNCAE, self).__init__()
+        # 定义编码器
+        self.noise_size = noise_size
+        self.cond_size = cond_size
+        self.feature_size = input_size // (2 ** 5)
+        self.encoder = nn.Sequential(
+            Down(input_dim, 32, normalize = False),  # size = ori_size // 2
+            Down(32, 64),    # size = ori_size // 4
+            Down(64, 128),    # size = ori_size // 8
+            Down(128, 256),    # size = ori_size // 16
+            Down(256, 512),    # size = ori_size // 32
+        )
+        self.conditionEmbedding = nn.Sequential(
+            nn.Linear(1, cond_size),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(cond_size),
+            nn.Linear(cond_size, cond_size * (self.feature_size ** 2)),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(cond_size * (self.feature_size ** 2))
+        )
+        self.bridge = nn.Sequential(
+            nn.Conv2d(512 + self.noise_size + self.cond_size, 512, 3, 1, 1)
+        )
+        self.up1 = CommonUp(512, 256)
+        self.up2 = CommonUp(384, 128)
+        self.up3 = CommonUp(192, 64)
+        self.up4 = CommonUp(96, 32)
+        self.up5 = CommonUp(48, 16)
+
+        self.out = nn.Sequential(
+            nn.Conv2d(16, output_dim, 3, 1, 1),
+            nn.Sigmoid()
+        )
+          
+
+    def forward(self, x, c):
+       # 在channel纬度叠加噪音
+        def concatNoise(x, shape):
+            noise = torch.rand(shape)
+            if torch.cuda.is_available():
+                noise = noise.cuda()
+            x = torch.cat([x, noise], dim=1)
+            return x
+
+        """
+        x : [b, t, c, h, w]
+        """
+        output = self.encoder(x)
+        output = concatNoise(output,[output.shape[0], self.noise_size, output.shape[2], output.shape[3]]) 
+        embedding_c = self.conditionEmbedding(c)
+        embedding_c = embedding_c.view(x.shape[0], self.cond_size, self.feature_size, self.feature_size)
+        output = torch.concat([output, embedding_c], dim = 1)   # channel = 512 + cond_size + noise_size
+
+        output = self.bridge(output)    # channel = 512
+
+        output = self.up1(output)   # channel = 256
+        output = concatNoise(output,[output.shape[0], 128, output.shape[2], output.shape[3]]) # channel = 384
+
+        output = self.up2(output)   # channel = 128
+        output = concatNoise(output,[output.shape[0], 64, output.shape[2], output.shape[3]])  # channel = 192
+
+        output = self.up3(output)   # channel = 64
+        output = concatNoise(output,[output.shape[0], 32, output.shape[2], output.shape[3]])  # channel = 96
+
+        output = self.up4(output)   # channel = 32
+        output = concatNoise(output,[output.shape[0], 16, output.shape[2], output.shape[3]])  # channel = 48
+
+        output = self.up5(output)
+        output = self.out(output)
+        
+        return output
 
 
 '''二维CVAE 网络
@@ -158,13 +243,21 @@ class CVAE(nn.Module):
             Down(256, 512),    # size = ori_size // 32
         )
         self.feature_size = input_size // (2 ** 5)
-        self.encoder_fc1 = nn.Linear(256 * (self.feature_size ** 2) , noise_size)
-        self.encoder_fc2 = nn.Linear(256 * (self.feature_size ** 2), noise_size)
+        self.encoder_fc1 = nn.Sequential(
+            nn.Linear(512 * (self.feature_size ** 2) , noise_size),
+            nn.BatchNorm1d(c_size)
+            )
+        
+        self.encoder_fc2 = nn.Linear(512 * (self.feature_size ** 2), noise_size)
         self.Sigmoid = nn.Sigmoid()
 
         self.conditionEmbedding = nn.Sequential(
             nn.Linear(1, c_size),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(c_size),
+            nn.Linear(c_size, c_size),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(c_size)
         )
 
         self.decoder_fc = nn.Linear(noise_size + c_size, 512 *  (self.feature_size ** 2))
@@ -181,7 +274,8 @@ class CVAE(nn.Module):
           
     def noise_reparameterize(self,mean,logvar):
         eps = torch.randn(mean.shape).to('cuda')
-        z = mean + eps * torch.exp(logvar)
+        std = torch.exp(0.5 * logvar)
+        z = mean + eps * std
         return z
 
     def forward(self, x, c):
@@ -213,7 +307,7 @@ class Discriminator(torch.nn.Module):
             Down(256, 512)   # size = ori_size // 32
         )
         self.classfier = nn.Sequential(
-            torch.nn.Conv3d(512, output_dim, 3, 1, 1),
+            torch.nn.Conv2d(512, output_dim, 3, 1, 1),
             nn.LeakyReLU(0.2, True)
             # 这里不需要sigmoid
         )

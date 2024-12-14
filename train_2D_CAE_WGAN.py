@@ -40,8 +40,8 @@ parser.add_argument("--save_interval", type=int, default=1000, help="interval be
 parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
 parser.add_argument('--gp_weight', type=float, default=10)
 parser.add_argument('--mask_size', type=int, default = 3 , help='size of mask')
-parser.add_argument('--pixel_weight', type=float, default=0.5, help='weight of pixel loss in generator')
-parser.add_argument('--cond_weight', type=float, default=0.4, help='weight of pixel loss in generator')
+parser.add_argument('--pixel_weight', type=float, default=5, help='weight of pixel loss in generator')
+parser.add_argument('--cond_weight', type=float, default=10, help='weight of pixel loss in generator')
 
 opt = parser.parse_args()
 print(opt)
@@ -74,7 +74,7 @@ def weights_init_normal(m):
 
 
 # 默认条件标签变量的维度 = 256
-generator = CAE(output_dim = 1, input_dim = 1, noise_size = opt.noise_size, cond_size = opt.cond_size)
+generator = CAE(output_dim = 1, input_dim = 1, input_size=opt.img_size, noise_size = opt.noise_size, cond_size = opt.cond_size)
 discriminator = Discriminator(output_dim = 1, input_dim = 1)
 
 if cuda:
@@ -128,7 +128,7 @@ else:
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 def save_sample(batches_done):   
-    img = next(iter(dataloader))[0:1, ...]
+    img = next(iter(dataloader))
     img = Variable(img.type(Tensor))
     
     # Generate inpainted image
@@ -139,6 +139,7 @@ def save_sample(batches_done):
     gen_img = generator(mask_imgs, fake_por) 
 
     # Save sample
+    save_image(img[:, :, :, :], "%s/%d_ori.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
     save_image(gen_img[:, :, :, :], "%s/%d_gen.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
 
 def gradientPenalty(real_data, generated_data):
@@ -179,6 +180,12 @@ def gradientPenalty(real_data, generated_data):
 def porosityLoss(por, gen_por):
     return MSECriterion(por, gen_por)
 
+def sum_normalize(values):
+    values = np.array(values)
+    total_sum = np.sum(values)
+    if total_sum == 0:
+        return np.full_like(values, 1/len(values))  # 如果总和为0，返回全1/n
+    return values / total_sum
 
 # ----------
 #  Training
@@ -190,6 +197,8 @@ for epoch in range(start_epoch, opt.n_epochs):
     data_iter = iter(dataloader)
     i = 0
     nz = opt.noise_size
+    pre_save_sample = 0
+    pre_save_data = 0
     while i < len(dataloader):
 
         # ---------------------
@@ -261,10 +270,9 @@ for epoch in range(start_epoch, opt.n_epochs):
         # 3. context pixel 损失
         g_pixel = pixelwise_loss(gen_imgs * mask, masked_imgs * mask).mean()
 
-        w1 = opt.pixel_weight
-        w2 = opt.cond_weight
-        g_loss = (1- w1 - w2) * g_adv + w1 * g_pixel + w2 * g_por
-
+        weights = sum_normalize([1, opt.pixel_weight, opt.cond_weight])
+        g_loss = weights[0] * g_adv + weights[1] * g_pixel + weights[2] * g_por
+        
         g_loss.backward()
         optimizer_G.step()
 
@@ -276,12 +284,10 @@ for epoch in range(start_epoch, opt.n_epochs):
         )
 
         # Generate sample at sample interval
-        batches_done = epoch * len(dataloader) + i
-        if batches_done % opt.sample_interval == 0:
-            save_sample(batches_done)
+        batches_done = epoch * len(dataloader) + i        
         
-        
-        if batches_done % opt.save_interval == 0:
+        if batches_done - pre_save_data >= opt.save_interval:
+            pre_save_data = batches_done
             torch.save({'epoch': epoch, 
                         'generator': generator.state_dict(), 
                         'optimizer_G': optimizer_G.state_dict(), 
@@ -291,7 +297,9 @@ for epoch in range(start_epoch, opt.n_epochs):
                         'd_loss': d_loss, 
                         'gen_iterations': gen_iterations,
                         'gp': gp},  "%s/%d.pth" % (opt.out_dir, batches_done))
-        
+        if batches_done - pre_save_sample >= opt.sample_interval:
+            pre_save_sample = batches_done
+            save_sample(batches_done)
         if use_wandb:
             wandb.log({'d_loss': d_loss.item(), 'g_loss': g_loss.item(), 'pixel_loss:' : g_pixel.item() ,'por_loss' : g_por.item(), 'gp': gp.item()})
             
