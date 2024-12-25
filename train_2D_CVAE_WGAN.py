@@ -31,13 +31,15 @@ parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads 
 parser.add_argument("--ckpt", type=str, default='', help="checkpoint of generator and discriminator")
 parser.add_argument("--ori_size", type=int, default = 1200, help="size of each image dimension in dataset")
 parser.add_argument("--img_size", type=int, default = 512, help="size of each image dimension for training")
-parser.add_argument("--noise_size", type=int, default = 256, help="size of noise  dimension for training")
+parser.add_argument("--noise_size", type=int, default = 128, help="size of noise  dimension for training")
+parser.add_argument("--cond_size", type=int, default = 128, help="size of condition embedding  for training")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=1000, help="interval between image sampling")
-parser.add_argument("--save_interval", type=int, default=1000, help="interval between ckpt save")
+parser.add_argument("--sample_interval", type=int, default=5000, help="interval between image sampling")
+parser.add_argument("--save_interval", type=int, default=5000, help="interval between ckpt save")
 parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
 parser.add_argument('--gp_weight', type=float, default=10)
 parser.add_argument('--pixel_weight', type=float, default=0.2, help='weight of pixel loss in generator')
+parser.add_argument('--kl_weight', type=float, default=0.1, help='weight of kl loss in vae')
 opt = parser.parse_args()
 print(opt)
 
@@ -69,7 +71,7 @@ def weights_init_normal(m):
 
 
 # 默认条件标签变量的维度 = 256
-vae = CVAE(output_dim = 1, input_dim = 1, input_size = opt.img_size, noise_size = opt.noise_size)
+vae = CVAE(output_dim = 1, input_dim = 1, input_size = opt.img_size, noise_size = opt.noise_size, c_size = opt.cond_size)
 discriminator = Discriminator(output_dim = 1, input_dim = 1)
 
 if cuda:
@@ -121,14 +123,17 @@ else:
     
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-def save_sample(batches_done):    
-
+def save_sample(batches_done):  
+    img = next(iter(dataloader))
+    nz = opt.noise_size
     z = torch.rand(img.shape[0], nz)
     z = Variable(z.type(Tensor))
-    fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size, feature_size)   # [bs, 1, s, h, w]
+    fake_por = 0.3 + (0.7 - 0.3) * torch.rand(img.shape[0], 1)
+    fake_por = Variable(fake_por.type(Tensor))
+    embedding_c = vae.conditionEmbedding(fake_por)
+    z = torch.concat([z, embedding_c], dim = 1)
+    fake_data = vae.decoder_fc(z).view(z.shape[0], -1, feature_size, feature_size)   # [bs, 1, s, h, w]
     gen_img = vae.decoder(fake_data)    # [bs, 1, s, h, w]
-    
-    # Save sample
     save_image(gen_img[:, :, :, :], "%s/%d_gen.png" % (opt.out_dir, batches_done), nrow=5, normalize=True)
 
 def gradientPenalty(real_data, generated_data):
@@ -168,10 +173,8 @@ def gradientPenalty(real_data, generated_data):
 def vae_loss(recon_x , x, mean, logstd):
     # BCE = F.binary_cross_entropy(recon_x,x,reduction='sum')
     MSE = MSECriterion(recon_x,x)
-    # 因为var是标准差的自然对数，先求自然对数然后平方转换成方差
-    var = torch.pow(torch.exp(logstd),2)
-    KLD = -0.5 * torch.sum(1 + torch.log(var) - torch.pow(mean,2) - var)
-    return MSE+KLD
+    KLD = -0.5 * opt.kl_weight * torch.sum(1 + logstd -  torch.exp(logstd) - torch.pow(mean,2))
+    return MSE, KLD
 
 # input_size = [bs, 1]
 def porosityLoss(por, gen_por):
@@ -188,6 +191,8 @@ for epoch in range(start_epoch, opt.n_epochs):
     data_iter = iter(dataloader)
     i = 0
     nz = opt.noise_size
+    pre_save_sample = 0
+    pre_save_data = 0
     while i < len(dataloader):
 
         # ---------------------
@@ -248,7 +253,8 @@ for epoch in range(start_epoch, opt.n_epochs):
         por = porosity(img)  # [bs, 1]
         recon_img, mean, logstd = vae(img, por)
         recon_por = porosity(recon_img)
-        vaeloss = vae_loss(gen_img, img, mean, logstd) + porosityLoss(por, recon_por)
+        MSE, KLD = vae_loss(gen_img, img, mean, logstd)
+        vaeloss= MSE + KLD + porosityLoss(por, recon_por)
         vaeloss.backward()
         optimizer_VAE.step()
 
@@ -277,17 +283,19 @@ for epoch in range(start_epoch, opt.n_epochs):
         gen_iterations += 1
 
         print(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [VAE Loss: %f] [por Loss: %f] [gp: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item() ,vaeloss.item(), por_loss.item(), gp.item())
+            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [MSE Loss: %f] [KLD Loss: %f] [por Loss: %f] [gp: %f]"
+            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item() ,MSE.item(), KLD.item(), por_loss.item(), gp.item())
         )
 
         # Generate sample at sample interval
         batches_done = epoch * len(dataloader) + i
-        if batches_done % opt.sample_interval == 0:
+        if batches_done - pre_save_sample >= opt.sample_interval:
+            pre_save_sample = batches_done
             save_sample(batches_done)
         
         
-        if batches_done % opt.save_interval == 0:
+        if batches_done - pre_save_data >= opt.save_interval:
+            pre_save_data = batches_done
             torch.save({'epoch': epoch, 
                         'vae': vae.state_dict(), 
                         'optimizer_VAE': optimizer_VAE.state_dict(), 

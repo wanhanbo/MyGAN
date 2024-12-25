@@ -107,7 +107,10 @@ class ImageDatasetWithSingle(Dataset):
         
         return imgs_tensor[:-1,...],imgs_tensor[-1,...]
 
-'''随机读取单张图像'''
+'''
+随机读取单张图像
+并裁剪为img_size尺寸, 对原始尺寸不做要求
+'''
 class SingleImageDataset(Dataset):  
     def __init__(self, root_dir, img_size, transforms_ = None):
         super(SingleImageDataset, self).__init__()
@@ -141,12 +144,16 @@ class SingleImageDataset(Dataset):
         imgs_tensor = random_rotate(imgs_tensor)
         return imgs_tensor  # [c, h, w]
 
-# 用于训练三维模型
-class ImageDataset3D(Dataset):  
-    def __init__(self, root_dir, ori_size, img_size, transforms_ = None):
-        super(ImageDataset3D, self).__init__()
+
+'''
+随机读取单张图像
+并裁剪为img_size尺寸, 对原始尺寸不做要求
+并使用骨架提取算法进行mask
+'''
+class SingleImageDatasetWithMask(Dataset):  
+    def __init__(self, root_dir, img_size, transforms_ = None):
+        super(SingleImageDatasetWithMask, self).__init__()
         self.root_dir = root_dir
-        self.ori_size = ori_size
         self.img_size = img_size
         self.transforms = transforms.Compose(transforms_)
         self.data = sorted(glob.glob(os.path.join(root_dir, "*.bmp")), key=lambda x: int(''.join(filter(str.isdigit, x))))
@@ -155,32 +162,28 @@ class ImageDataset3D(Dataset):
         return len(self.data)
     
     def __getitem__(self, index):  
+        # 加载图像
+        img_path = self.data[index]
+        img = Image.open(os.path.join(self.root_dir, img_path)).convert('L')
 
-        seq_len = self.img_size # 序列长度就是三维模型的高度
-        index = random.randint(0, len(self.data) - seq_len - 1)
-        imgs_list = []
+        # 提取骨架作为mask
+        mask = skeletonize(img) # bool
+        mask_tensor = torch.from_numpy(mask).bool()  # [seq_len, h, w]
 
-        #  提前确定好平面裁剪的参数
-        h, w = self.ori_size, self.ori_size
-        th, tw = self.img_size, self.img_size
-
+        # 转换为张量
+        imgs_tensor = ToTensor()(img)
+        
+        # 随机裁剪
+        _, h, w = imgs_tensor.shape
+        th, tw = (self.img_size,self.img_size)
         h0 = random.randint(0, h - th)
         w0 = random.randint(0, w - tw)
-        for i in range(index, index + seq_len):
-            img_path = self.data[i] 
-            img = Image.open(os.path.join(self.root_dir, img_path)).convert('L')
-            imgs_tensor = ToTensor()(img).squeeze(0) # [h, w]
-            # 按既定参数裁剪
-            imgs_tensor = imgs_tensor[h0:h0+th, w0:w0+tw]
-            
-            imgs_list.append(imgs_tensor)
-            img.close()
-        
-        imgs_tensor = torch.stack(tuple(imgs_list), dim=0) # [seq_len, h, w]
-        # 增加随机旋转
-        imgs_tensor = random_rotate(imgs_tensor)
+        imgs_tensor = imgs_tensor[:, h0:h0+th, w0:w0+tw]
+
+        # 应用变换
         if self.transforms:
             imgs_tensor = self.transforms(imgs_tensor)
-        imgs_tensor = imgs_tensor.unsqueeze(0) # [c, seq_len, h, w]
-        
-        return imgs_tensor
+        # 旋转进行图像增强
+        imgs_tensor = random_rotate(imgs_tensor)
+        return imgs_tensor  # [c, h, w]
+
